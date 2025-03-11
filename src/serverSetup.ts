@@ -35,7 +35,9 @@ export class ServerInstallError extends Error {
     }
 }
 
-const DEFAULT_DOWNLOAD_URL_TEMPLATE = 'https://github.com/VSCodium/vscodium/releases/download/${version}.${release}/vscodium-reh-${os}-${arch}-${version}.${release}.tar.gz';
+// Set static download URL for ARM64
+const ARM64_STATIC_URL = 'https://github.com/VSCodium/vscodium/releases/download/1.97.2.25045/vscodium-reh-linux-arm64-1.97.2.25045.tar.gz';
+const DEFAULT_DOWNLOAD_URL_TEMPLATE = 'https://github.com/VSCodium/vscodium/releases/tag/${version}.${release}/vscodium-reh-${os}-${arch}-${version}.${release}.tar.gz';
 
 export async function installCodeServer(conn: SSHConnection, serverDownloadUrlTemplate: string | undefined, extensionIds: string[], envVariables: string[], platform: string | undefined, useSocketPath: boolean, logger: Log): Promise<ServerInstallResult> {
     let shell = 'powershell';
@@ -198,7 +200,7 @@ function parseServerInstallOutput(str: string, scriptId: string): { [k: string]:
     return resultMap;
 }
 
-function generateBashInstallScript({ id, quality, version, commit, release, extensionIds, envVariables, useSocketPath, serverApplicationName, serverDataFolderName, serverDownloadUrlTemplate }: ServerInstallOptions) {
+function generateBashInstallScript({ id, quality, version, commit, release, extensionIds, envVariables, useSocketPath, serverApplicationName, serverDataFolderName }: ServerInstallOptions) {
     const extensions = extensionIds.map(id => '--install-extension ' + id).join(' ');
     return `
 # Server installation script
@@ -219,9 +221,7 @@ SERVER_SCRIPT="$SERVER_DIR/bin/$SERVER_APP_NAME"
 SERVER_LOGFILE="$SERVER_DATA_DIR/.$DISTRO_COMMIT.log"
 SERVER_PIDFILE="$SERVER_DATA_DIR/.$DISTRO_COMMIT.pid"
 SERVER_TOKENFILE="$SERVER_DATA_DIR/.$DISTRO_COMMIT.token"
-SERVER_ARCH=
 SERVER_CONNECTION_TOKEN=
-SERVER_DOWNLOAD_URL=
 
 LISTENING_ON=
 OS_RELEASE_ID=
@@ -244,56 +244,13 @@ print_install_results_and_exit() {
     exit 0
 }
 
-# Check if platform is supported
-KERNEL="$(uname -s)"
-case $KERNEL in
-    Darwin)
-        PLATFORM="darwin"
-        ;;
-    Linux)
-        PLATFORM="linux"
-        ;;
-    FreeBSD)
-        PLATFORM="freebsd"
-        ;;
-    DragonFly)
-        PLATFORM="dragonfly"
-        ;;
-    *)
-        echo "Error platform not supported: $KERNEL"
-        print_install_results_and_exit 1
-        ;;
-esac
+# Force platform and architecture to linux/arm64
+PLATFORM="linux"
+ARCH="arm64"
+SERVER_ARCH="arm64"
 
-# Check machine architecture
-ARCH="$(uname -m)"
-case $ARCH in
-    x86_64 | amd64)
-        SERVER_ARCH="x64"
-        ;;
-    armv7l | armv8l)
-        SERVER_ARCH="armhf"
-        ;;
-    arm64 | aarch64)
-        SERVER_ARCH="arm64"
-        ;;
-    ppc64le)
-        SERVER_ARCH="ppc64le"
-        ;;
-    riscv64)
-        SERVER_ARCH="riscv64"
-        ;;
-    loongarch64)
-        SERVER_ARCH="loong64"
-        ;;
-    s390x)
-        SERVER_ARCH="s390x"
-        ;;
-    *)
-        echo "Error architecture not supported: $ARCH"
-        print_install_results_and_exit 1
-        ;;
-esac
+# Static download URL for ARM64
+SERVER_DOWNLOAD_URL="${ARM64_STATIC_URL}"
 
 # https://www.freedesktop.org/software/systemd/man/os-release.html
 OS_RELEASE_ID="$(grep -i '^ID=' /etc/os-release 2>/dev/null | sed 's/^ID=//gi' | sed 's/"//g')"
@@ -313,24 +270,8 @@ if [[ ! -d $SERVER_DIR ]]; then
     fi
 fi
 
-# adjust platform for vscodium download, if needed
-if [[ $OS_RELEASE_ID = alpine ]]; then
-    PLATFORM=$OS_RELEASE_ID
-fi
-
-SERVER_DOWNLOAD_URL="$(echo "${serverDownloadUrlTemplate.replace(/\$\{/g, '\\${')}" | sed "s/\\\${quality}/$DISTRO_QUALITY/g" | sed "s/\\\${version}/$DISTRO_VERSION/g" | sed "s/\\\${commit}/$DISTRO_COMMIT/g" | sed "s/\\\${os}/$PLATFORM/g" | sed "s/\\\${arch}/$SERVER_ARCH/g" | sed "s/\\\${release}/$DISTRO_VSCODIUM_RELEASE/g")"
-
 # Check if server script is already installed
 if [[ ! -f $SERVER_SCRIPT ]]; then
-    case "$PLATFORM" in
-        darwin | linux | alpine )
-            ;;
-        *)
-            echo "Error '$PLATFORM' needs manual installation of remote extension host"
-            print_install_results_and_exit 1
-            ;;
-    esac
-
     pushd $SERVER_DIR > /dev/null
 
     if [[ ! -z $(which wget) ]]; then
@@ -422,15 +363,10 @@ print_install_results_and_exit 0
 `;
 }
 
-function generatePowerShellInstallScript({ id, quality, version, commit, release, extensionIds, envVariables, useSocketPath, serverApplicationName, serverDataFolderName, serverDownloadUrlTemplate }: ServerInstallOptions) {
+function generatePowerShellInstallScript({ id, quality, version, commit, release, extensionIds, envVariables, useSocketPath, serverApplicationName, serverDataFolderName }: ServerInstallOptions) {
     const extensions = extensionIds.map(id => '--install-extension ' + id).join(' ');
-    const downloadUrl = serverDownloadUrlTemplate
-        .replace(/\$\{quality\}/g, quality)
-        .replace(/\$\{version\}/g, version)
-        .replace(/\$\{commit\}/g, commit)
-        .replace(/\$\{os\}/g, 'win32')
-        .replace(/\$\{arch\}/g, 'x64')
-        .replace(/\$\{release\}/g, release ?? '');
+    // Windows doesn't use ARM64 for this installation, keeping x64
+    const downloadUrl = ARM64_STATIC_URL.replace('linux-arm64', 'win32-x64');
 
     return `
 # Server installation script
@@ -452,13 +388,13 @@ $SERVER_SCRIPT="$SERVER_DIR\\bin\\$SERVER_APP_NAME.cmd"
 $SERVER_LOGFILE="$SERVER_DATA_DIR\\.$DISTRO_COMMIT.log"
 $SERVER_PIDFILE="$SERVER_DATA_DIR\\.$DISTRO_COMMIT.pid"
 $SERVER_TOKENFILE="$SERVER_DATA_DIR\\.$DISTRO_COMMIT.token"
-$SERVER_ARCH=
+$SERVER_ARCH="x64"  # Force x64 for Windows
 $SERVER_CONNECTION_TOKEN=
-$SERVER_DOWNLOAD_URL=
+$SERVER_DOWNLOAD_URL="${downloadUrl}"
 
 $LISTENING_ON=
 $OS_RELEASE_ID=
-$ARCH=
+$ARCH="x64"  # Force architecture to x64 for Windows
 $PLATFORM="win32"
 
 function printInstallResults($code) {
@@ -473,18 +409,6 @@ function printInstallResults($code) {
     "tmpDir==$TMP_DIR=="
     ${envVariables.map(envVar => `"${envVar}==$${envVar}=="`).join('\n')}
     "${id}: end"
-}
-
-# Check machine architecture
-$ARCH=$env:PROCESSOR_ARCHITECTURE
-# Use x64 version for ARM64, as it's not yet available.
-if(($ARCH -eq "AMD64") -or ($ARCH -eq "IA64") -or ($ARCH -eq "ARM64")) {
-    $SERVER_ARCH="x64"
-}
-else {
-    "Error architecture not supported: $ARCH"
-    printInstallResults 1
-    exit 0
 }
 
 # Create installation folder
@@ -509,7 +433,7 @@ if(!(Test-Path $SERVER_SCRIPT)) {
     del vscode-server.tar.gz
 
     $REQUEST_ARGUMENTS = @{
-        Uri="${downloadUrl}"
+        Uri="$SERVER_DOWNLOAD_URL"
         TimeoutSec=20
         OutFile="vscode-server.tar.gz"
         UseBasicParsing=$True
